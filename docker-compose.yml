@@ -2,8 +2,10 @@ version: '3.8'
 
 services:
   emma-ia:
-    build: .
-    container_name: emma-ia-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emma-ia-production
     ports:
       - "8001:8001"
     environment:
@@ -11,17 +13,37 @@ services:
       - EMMA_HOST=0.0.0.0
       - EMMA_PORT=8001
       - EMMA_DEBUG=false
+      - EMMA_ENVIRONMENT=production
     env_file:
       - .env
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
     networks:
       - emma-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.emma.service=emma-ia"
+      - "com.emma.environment=production"
+      - "com.emma.version=2.0.0"
 
 networks:
   emma-network:
     driver: bridge
+    name: emma-production-network
