@@ -32,9 +32,6 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copier le code de l'application
 COPY app/ ./app/
 
-# Copier .env.example s'il existe, ou créer un fichier vide
-# (Supprimer ou commenter la ligne suivante qui copie .env)
-# COPY .env .env
 
 # Créer un fichier .env vide si nécessaire
 RUN touch .env
