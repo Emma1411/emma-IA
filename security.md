@@ -9,4 +9,4 @@ En environnement de production, notamment dans une institution financière, l’
 - **OpenAI Enterprise**
 - **Azure OpenAI** avec déploiement dans une région canadienne
 
-Cette approche vise à répondre aux exigences de **sécurité, de confidentialité, de souveraineté des données et de gouvernance**, notamment dans le cadre de la **Loi 25 (Québec)** et de la **LPRPDE (Canada)**.
+Cette approche vise à répondre aux exigences de **sécurité, de confidentialité, de souveraineté des données et de gouvernance**, notamment dans le cadre de la **Loi 25 (Québec)** et de la **LPRPDE (Canada)**..
