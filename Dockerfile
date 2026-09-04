@@ -32,7 +32,6 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copier le code de l'application
 COPY app/ ./app/
 
-
 # Créer un fichier .env vide si nécessaire
 RUN touch .env
 

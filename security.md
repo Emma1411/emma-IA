@@ -1,2 +1,12 @@
-Pour cette version portfolio, Emma IA utilise l'API DeepSeek pour des raisons de coût et de simplicité de déploiement. Dans un contexte de production réelle en institution financière, ce choix serait remplacé par un modèle auto-hébergé (Ollama/Qwen3) ou une offre entreprise avec garanties contractuelles de résidence des données (ex: OpenAI Enterprise, Azure OpenAI avec région Canada), afin de respecter les exigences de souveraineté des données imposées par la Loi 25 et la LPRPDE.
+## Choix du modèle IA
 
+Pour cette version portfolio, Emma IA utilise l’API **DeepSeek** pour des raisons de coût et de simplicité de déploiement.
+
+En environnement de production, notamment dans une institution financière, l’architecture pourrait évoluer vers :
+
+- Un modèle **auto-hébergé** avec **Ollama**
+- Une solution entreprise offrant des garanties de **résidence et de protection des données**
+- **OpenAI Enterprise**
+- **Azure OpenAI** avec déploiement dans une région canadienne
+
+Cette approche vise à répondre aux exigences de **sécurité, de confidentialité, de souveraineté des données et de gouvernance**, notamment dans le cadre de la **Loi 25 (Québec)** et de la **LPRPDE (Canada)**.
