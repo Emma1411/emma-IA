@@ -1,9 +1,7 @@
-# app/main.py
-
 import logging
 import uuid
 from contextlib import asynccontextmanager
-
+from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -16,7 +14,10 @@ from app.models import (
     DemarrerConversationResponse,
     ChatMessageInput,
     ChatMessageResponse,
+    AjouterHypotheseRequest,
+    AjouterHypotheseResponse,
 )
+from app.chat_intent import est_demande_analyse_complete
 from app.emma_ia import EmmaIA
 import app.conversation_store as conversation_store_module
 from app.conversation_store import (
@@ -271,6 +272,149 @@ async def demarrer_conversation(
     )
 
 
+async def _traiter_message_chat(
+    payload: ChatMessageInput,
+    conv: Dict[str, Any],
+) -> ChatMessageResponse:
+    """
+    Logique commune SaaS/démo.
+
+    Si le message demande une analyse complète, le dossier est envoyé
+    à emma.analyser() avec les hypothèses déjà ajoutées pendant la
+    conversation.
+
+    Sinon, le message est traité par chat_contextualise().
+    """
+
+    dossier_context = conv["dossier_context"]
+    store = get_conversation_store()
+
+
+    if est_demande_analyse_complete(payload.message):
+        try:
+            resultat_complet = emma.analyser(
+                {
+                    **dossier_context.get(
+                        "donnees_dossier",
+                        {},
+                    ),
+                    "metriques_officielles_calculees": (
+                        dossier_context.get(
+                            "metriques_officielles_calculees",
+                            {},
+                        )
+                    ),
+                    "champs_obligatoires_pour_ce_produit": (
+                        dossier_context.get(
+                            "champs_obligatoires_pour_ce_produit",
+                            [],
+                        )
+                    ),
+
+                    # IMPORTANT :
+                    # Les hypothèses ajoutées via
+                    # POST /conversations/{id}/hypotheses
+                    # doivent être transmises à Emma.
+                    "hypotheses_deja_ajoutees": (
+                        dossier_context.get(
+                            "hypotheses_existantes",
+                            [],
+                        )
+                    ),
+                }
+            )
+
+        except Exception:
+            logger.exception(
+                "Erreur lors de l'analyse complète via chat"
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail="Erreur interne de l'analyse",
+            )
+
+        # Historisation du message utilisateur.
+        await store.ajouter_message(
+            conversation_id=payload.conversation_id,
+            role="user",
+            contenu=payload.message,
+            ticket_id=conv["ticket_id"],
+        )
+
+        # Historisation d'une version texte de la réponse.
+        synthese = resultat_complet.get(
+            "synthese",
+            {},
+        )
+
+        if isinstance(synthese, dict):
+            contenu_assistant = synthese.get(
+                "texte",
+                "Analyse complète générée.",
+            )
+        else:
+            contenu_assistant = "Analyse complète générée."
+
+        await store.ajouter_message(
+            conversation_id=payload.conversation_id,
+            role="assistant",
+            contenu=contenu_assistant,
+            ticket_id=conv["ticket_id"],
+        )
+
+        return ChatMessageResponse(
+            conversation_id=payload.conversation_id,
+            mode="analyse_complete",
+            reponse=resultat_complet,
+        )
+
+
+    historique = await store.get_historique_tronque(
+        payload.conversation_id,
+        limit=MAX_MESSAGES_HISTORIQUE,
+    )
+
+    try:
+        enveloppe = emma.chat_contextualise(
+            message=payload.message,
+            dossier_context=dossier_context,
+            historique_messages=historique,
+        )
+
+    except Exception:
+        logger.exception(
+            "Erreur lors du traitement du chat"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur interne du chat",
+        )
+
+    # La nouvelle version de chat_contextualise retourne
+    # une enveloppe JSON structurée, pas une string.
+    await store.ajouter_message(
+        conversation_id=payload.conversation_id,
+        role="user",
+        contenu=payload.message,
+        ticket_id=conv["ticket_id"],
+    )
+
+    await store.ajouter_message(
+        conversation_id=payload.conversation_id,
+        role="assistant",
+        contenu=enveloppe["message"],
+        ticket_id=conv["ticket_id"],
+    )
+
+    return ChatMessageResponse(
+        conversation_id=payload.conversation_id,
+        mode="chat",
+        reponse=enveloppe,
+    )
+
+
 @app.post(
     "/api/v1/chat",
     response_model=ChatMessageResponse,
@@ -281,7 +425,13 @@ async def chat_avec_emma(
     payload: ChatMessageInput,
     client: ClientType = Depends(verifier_client),
 ):
-    """Envoie un message dans une conversation SaaS existante."""
+    """
+    Chat SaaS.
+
+    Route commune qui détecte automatiquement :
+    - une demande d'analyse complète ;
+    - ou un échange conversationnel classique.
+    """
 
     if not emma:
         raise HTTPException(
@@ -307,45 +457,9 @@ async def chat_avec_emma(
             detail="Conversation introuvable",
         )
 
-    historique = await store.get_historique_tronque(
-        payload.conversation_id,
-        limit=MAX_MESSAGES_HISTORIQUE,
-    )
-
-    try:
-        reponse = emma.chat_contextualise(
-            message=payload.message,
-            dossier_context=conv["dossier_context"],
-            historique_messages=historique,
-        )
-
-    except Exception:
-        logger.exception(
-            "Erreur lors du traitement du chat"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Erreur interne du chat",
-        )
-
-    await store.ajouter_message(
-        conversation_id=payload.conversation_id,
-        role="user",
-        contenu=payload.message,
-        ticket_id=conv["ticket_id"],
-    )
-
-    await store.ajouter_message(
-        conversation_id=payload.conversation_id,
-        role="assistant",
-        contenu=reponse,
-        ticket_id=conv["ticket_id"],
-    )
-
-    return ChatMessageResponse(
-        conversation_id=payload.conversation_id,
-        reponse=reponse,
+    return await _traiter_message_chat(
+        payload=payload,
+        conv=conv,
     )
 
 
@@ -439,7 +553,13 @@ async def chat_demo(
     payload: ChatMessageInput,
     client: ClientType = Depends(verifier_client),
 ):
-    """Traite un message dans une conversation de démonstration."""
+    """
+    Chat de démonstration.
+
+    Même logique que le SaaS :
+    - analyse complète si demandée ;
+    - sinon chat contextualisé.
+    """
 
     if not emma:
         raise HTTPException(
@@ -468,45 +588,131 @@ async def chat_demo(
             detail="Conversation de démo introuvable",
         )
 
-    historique = await store.get_historique_tronque(
-        payload.conversation_id,
-        limit=MAX_MESSAGES_HISTORIQUE,
+    return await _traiter_message_chat(
+        payload=payload,
+        conv=conv,
     )
+
+
+@app.post(
+    "/api/v1/conversations/{conversation_id}/hypotheses",
+    response_model=AjouterHypotheseResponse,
+)
+@limiter.limit(settings.rate_limit_saas)
+async def ajouter_hypothese_saas(
+    request: Request,
+    conversation_id: str,
+    payload: AjouterHypotheseRequest,
+    client: ClientType = Depends(verifier_client),
+):
+    """
+    Ajoute une hypothèse non vérifiée au dossier d'une conversation
+    SaaS.
+
+    L'hypothèse est stockée dans hypotheses_existantes et sera
+    automatiquement transmise à Emma lors de la prochaine analyse
+    complète.
+    """
+
+    if client != ClientType.SAAS:
+        raise HTTPException(
+            status_code=403,
+            detail="Route réservée au SaaS",
+        )
+
+    store = get_conversation_store()
+
+    conv = await store.get_conversation(
+        conversation_id
+    )
+
+    if conv is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation introuvable",
+        )
+
+    hypothese = {
+        "description": payload.description,
+        "champ_impacte": payload.champ_impacte,
+        "source": "Analyste",
+    }
 
     try:
-        reponse = emma.chat_contextualise(
-            message=payload.message,
-            dossier_context=conv["dossier_context"],
-            historique_messages=historique,
+        hypotheses = await store.ajouter_hypothese(
+            conversation_id,
+            hypothese,
         )
 
-    except Exception:
-        logger.exception(
-            "Erreur lors du chat de démo"
-        )
-
+    except KeyError:
         raise HTTPException(
-            status_code=500,
-            detail="Erreur interne",
+            status_code=404,
+            detail="Conversation introuvable",
         )
 
-    await store.ajouter_message(
-        conversation_id=payload.conversation_id,
-        role="user",
-        contenu=payload.message,
-        ticket_id=conv["ticket_id"],
+    return AjouterHypotheseResponse(
+        conversation_id=conversation_id,
+        hypotheses_existantes=hypotheses,
     )
 
-    await store.ajouter_message(
-        conversation_id=payload.conversation_id,
-        role="assistant",
-        contenu=reponse,
-        ticket_id=conv["ticket_id"],
+
+@app.post(
+    "/api/v1/demo/conversations/{conversation_id}/hypotheses",
+    response_model=AjouterHypotheseResponse,
+)
+@limiter.limit(settings.rate_limit_demo)
+async def ajouter_hypothese_demo(
+    request: Request,
+    conversation_id: str,
+    payload: AjouterHypotheseRequest,
+    client: ClientType = Depends(verifier_client),
+):
+    """
+    Ajoute une hypothèse non vérifiée à une conversation de démo.
+    """
+
+    if client != ClientType.DEMO:
+        raise HTTPException(
+            status_code=403,
+            detail="Route réservée à la démo",
+        )
+
+    store = get_conversation_store()
+
+    conv = await store.get_conversation(
+        conversation_id
     )
 
-    return ChatMessageResponse(
-        conversation_id=payload.conversation_id,
-        reponse=reponse,
+    if (
+        conv is None
+        or not conv["ticket_id"].startswith("DEMO-")
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation de démo introuvable",
+        )
+
+    hypothese = {
+        "description": payload.description,
+        "champ_impacte": payload.champ_impacte,
+        "source": "Analyste",
+    }
+
+    try:
+        hypotheses = await store.ajouter_hypothese(
+            conversation_id,
+            hypothese,
+        )
+
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation introuvable",
+        )
+
+    return AjouterHypotheseResponse(
+        conversation_id=conversation_id,
+        hypotheses_existantes=hypotheses,
     )
 
 

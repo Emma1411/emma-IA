@@ -1,6 +1,5 @@
 import json
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -155,8 +154,40 @@ class ChatMessageInput(BaseModel):
     )
 
 
+class ChatEnvelope(BaseModel):
+    type: str
+    message: str
+    position: Optional[str] = None
+    niveau_confiance: Optional[str] = None
+    elements_favorables: List[str] = Field(default_factory=list)
+    points_attention: List[str] = Field(default_factory=list)
+    validation_humaine_requise: List[str] = Field(default_factory=list)
+
+
 class ChatMessageResponse(BaseModel):
     """Réponse du chat associée à la conversation."""
 
     conversation_id: str
-    reponse: str
+    mode: Literal["chat", "analyse_complete"]
+    reponse: Dict[str, Any]
+
+
+class AjouterHypotheseRequest(BaseModel):
+    """
+    Ajoute une hypothèse non vérifiée au dossier d'une conversation
+    en cours. Cette hypothèse sera reportée dans toute analyse
+    complète générée ensuite via le chat ou /analyser.
+    """
+
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+    )
+
+    champ_impacte: Optional[str] = None
+
+
+class AjouterHypotheseResponse(BaseModel):
+    conversation_id: str
+    hypotheses_existantes: List[Dict[str, Any]]

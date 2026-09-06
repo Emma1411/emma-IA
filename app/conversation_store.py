@@ -162,6 +162,29 @@ class ConversationStore:
 
         return conversation["dossier_context"]
 
+    async def ajouter_hypothese(
+            self,
+            conversation_id: str,
+            hypothese: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        conv = self._conversations.get(conversation_id)
+
+        if conv is None:
+            raise KeyError(
+                f"Conversation introuvable : {conversation_id}"
+            )
+
+        hypotheses = conv["dossier_context"].get(
+            "hypotheses_existantes",
+            [],
+        )
+
+        hypotheses.append(hypothese)
+
+        conv["dossier_context"]["hypotheses_existantes"] = hypotheses
+
+        return hypotheses
+
     async def purger_conversations_demo_expirees(
         self,
         max_age_heures: int = 2,
@@ -245,12 +268,16 @@ class ConversationStore:
         try:
             await self._es.close()
         except Exception:
-            logger.exception("Erreur lors de la fermeture Elasticsearch")
+            logger.exception(
+                "Erreur lors de la fermeture Elasticsearch"
+            )
 
         try:
             await self._pg.close()
         except Exception:
-            logger.exception("Erreur lors de la fermeture PostgreSQL")
+            logger.exception(
+                "Erreur lors de la fermeture PostgreSQL"
+            )
 
 
 class InMemoryConversationStore:
@@ -264,9 +291,9 @@ class InMemoryConversationStore:
     sans dépendre des vraies bases. À ne jamais utiliser tel quel en
     production multi-instance.
 
-    Implémente exactement la même interface async que ConversationStore
-    ci-dessus, afin que main.py n'ait aucune distinction à faire entre
-    les deux.
+    Implémente exactement la même interface async que
+    ConversationStore ci-dessus, afin que main.py n'ait aucune
+    distinction à faire entre les deux.
     """
 
     def __init__(self):
@@ -301,6 +328,7 @@ class InMemoryConversationStore:
         conversation_id: str,
     ) -> Optional[Dict[str, Any]]:
         conv = self._conversations.get(conversation_id)
+
         if conv is None:
             return None
 
@@ -316,11 +344,17 @@ class InMemoryConversationStore:
         limit: int = MAX_MESSAGES_HISTORIQUE,
     ) -> List[Dict[str, str]]:
         conv = self._conversations.get(conversation_id)
+
         if conv is None:
             return []
 
         messages = conv["messages"]
-        return messages[-limit:] if len(messages) > limit else messages
+
+        return (
+            messages[-limit:]
+            if len(messages) > limit
+            else messages
+        )
 
     async def ajouter_message(
         self,
@@ -331,10 +365,19 @@ class InMemoryConversationStore:
         analyste_id: Optional[str] = None,
     ) -> None:
         conv = self._conversations.get(conversation_id)
-        if conv is None:
-            raise KeyError(f"Conversation introuvable : {conversation_id}")
 
-        conv["messages"].append({"role": role, "content": contenu})
+        if conv is None:
+            raise KeyError(
+                f"Conversation introuvable : {conversation_id}"
+            )
+
+        conv["messages"].append(
+            {
+                "role": role,
+                "content": contenu,
+            }
+        )
+
         conv["last_message_at"] = datetime.now(timezone.utc)
 
     async def dossier_context(
@@ -342,13 +385,62 @@ class InMemoryConversationStore:
         conversation_id: str,
     ) -> Optional[Dict[str, Any]]:
         conv = self._conversations.get(conversation_id)
-        return conv["dossier_context"] if conv else None
+
+        return (
+            conv["dossier_context"]
+            if conv
+            else None
+        )
+
+    async def ajouter_hypothese(
+        self,
+        conversation_id: str,
+        hypothese: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Ajoute une hypothèse au dossier_context de la conversation.
+
+        Version mémoire de l'opération effectuée par
+        ConversationStore, afin de conserver exactement la même
+        interface async.
+
+        Retourne la liste complète des hypothèses après ajout.
+        """
+
+        conv = self._conversations.get(conversation_id)
+
+        if conv is None:
+            raise KeyError(
+                f"Conversation introuvable : {conversation_id}"
+            )
+
+        dossier_context = conv["dossier_context"]
+
+        if not isinstance(dossier_context, dict):
+            dossier_context = {}
+            conv["dossier_context"] = dossier_context
+
+        hypotheses = dossier_context.get(
+            "hypotheses_existantes",
+            [],
+        )
+
+        if not isinstance(hypotheses, list):
+            hypotheses = []
+
+        hypotheses.append(hypothese)
+
+        dossier_context["hypotheses_existantes"] = hypotheses
+
+        return hypotheses
 
     async def purger_conversations_demo_expirees(
         self,
         max_age_heures: int = 2,
     ) -> int:
-        seuil = datetime.now(timezone.utc) - timedelta(hours=max_age_heures)
+        seuil = datetime.now(timezone.utc) - timedelta(
+            hours=max_age_heures
+        )
 
         a_supprimer = [
             conv_id
@@ -362,7 +454,8 @@ class InMemoryConversationStore:
 
         if a_supprimer:
             logger.info(
-                "[MEMOIRE] Purge demo : %d conversation(s) supprimee(s)",
+                "[MEMOIRE] Purge demo : %d conversation(s) "
+                "supprimee(s)",
                 len(a_supprimer),
             )
 
@@ -390,34 +483,58 @@ async def creer_conversation_store(
     if not postgres_dsn or not elasticsearch_url:
         logger.warning(
             "POSTGRES_DSN et/ou ELASTICSEARCH_URL non configures — "
-            "utilisation du stockage EN MEMOIRE (perdu au redemarrage, "
-            "non partage entre instances). A remplacer avant tout usage "
-            "multi-instance ou en production."
+            "utilisation du stockage EN MEMOIRE "
+            "(perdu au redemarrage, non partage entre instances). "
+            "A remplacer avant tout usage multi-instance ou en "
+            "production."
         )
+
         return InMemoryConversationStore()
 
     try:
-        logger.info("Initialisation du pool PostgreSQL...")
-        pg_pool = await asyncpg.create_pool(dsn=postgres_dsn)
+        logger.info(
+            "Initialisation du pool PostgreSQL..."
+        )
 
-        logger.info("Initialisation du client Elasticsearch...")
-        es_client = AsyncElasticsearch(hosts=[elasticsearch_url])
+        pg_pool = await asyncpg.create_pool(
+            dsn=postgres_dsn
+        )
+
+        logger.info(
+            "Initialisation du client Elasticsearch..."
+        )
+
+        es_client = AsyncElasticsearch(
+            hosts=[elasticsearch_url]
+        )
 
         await es_client.info()
-        logger.info("Connexion Elasticsearch OK")
 
-        logger.info("ConversationStore production initialise")
-        return ConversationStore(pg_pool=pg_pool, es_client=es_client)
+        logger.info(
+            "Connexion Elasticsearch OK"
+        )
+
+        logger.info(
+            "ConversationStore production initialise"
+        )
+
+        return ConversationStore(
+            pg_pool=pg_pool,
+            es_client=es_client,
+        )
 
     except Exception:
         logger.exception(
             "Echec de connexion a PostgreSQL/Elasticsearch — "
             "repli automatique sur le stockage EN MEMOIRE"
         )
+
         return InMemoryConversationStore()
 
 
-async def fermer_conversation_store(store) -> None:
+async def fermer_conversation_store(
+    store,
+) -> None:
     """
     Ferme proprement les connexions du store, quelle que soit son
     implémentation (production ou mémoire).
@@ -428,11 +545,15 @@ async def fermer_conversation_store(store) -> None:
 
     try:
         await store.fermer()
-        logger.info("ConversationStore ferme")
+
+        logger.info(
+            "ConversationStore ferme"
+        )
+
     except Exception:
-        logger.exception("Erreur lors de la fermeture du ConversationStore")
+        logger.exception(
+            "Erreur lors de la fermeture du ConversationStore"
+        )
 
 
-# Instance globale initialisée par le lifespan de FastAPI.
-# Elle reste None tant que l'application n'est pas démarrée.
 conversation_store: Optional[ConversationStore] = None
