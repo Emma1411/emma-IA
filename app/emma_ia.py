@@ -1,12 +1,11 @@
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from openai import OpenAI
 
 from app.config import settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +112,8 @@ class EmmaIA:
             )
 
     def _deplier_si_double_enveloppe(
-        self,
-        dossier_data: Dict[str, Any],
+            self,
+            dossier_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Protection contre un payload déjà enveloppé.
@@ -127,7 +126,7 @@ class EmmaIA:
         """
 
         if "donnees_dossier" in dossier_data and isinstance(
-            dossier_data["donnees_dossier"], dict
+                dossier_data["donnees_dossier"], dict
         ):
             logger.warning(
                 "Payload deja enveloppe detecte (cle 'donnees_dossier' "
@@ -222,10 +221,9 @@ class EmmaIA:
             "controles_presence": controles,
         }
 
-
     def _valider_reponse(
-        self,
-        resultat: Dict[str, Any],
+            self,
+            resultat: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Vérifie que la réponse d'Emma respecte le format attendu.
@@ -258,8 +256,8 @@ class EmmaIA:
         if isinstance(synthese, dict):
             position = synthese.get("position")
             if (
-                position is not None
-                and position not in self.POSITIONS_AUTORISEES
+                    position is not None
+                    and position not in self.POSITIONS_AUTORISEES
             ):
                 logger.warning("Position Emma IA invalide : %s", position)
                 synthese["position"] = "non_determinable"
@@ -267,8 +265,8 @@ class EmmaIA:
         return resultat
 
     def analyser(
-        self,
-        dossier_data: Dict[str, Any],
+            self,
+            dossier_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Analyse complète d'un dossier anonymisé.
@@ -375,8 +373,8 @@ class EmmaIA:
             return self._reponse_erreur(erreur)
 
     def _reponse_erreur(
-        self,
-        erreur: Exception,
+            self,
+            erreur: Exception,
     ) -> Dict[str, Any]:
         """
         Réponse de secours lorsqu'une erreur technique survient.
@@ -402,6 +400,7 @@ class EmmaIA:
             "metriques_officielles": {},
             "informations_manquantes": [],
             "informations_non_exposees": [],
+            "informations_fournies_par_analyste": [],
             "hypotheses_non_verifiees": [],
             "incoherences": [],
             "patterns_detectes": [],
@@ -439,8 +438,8 @@ class EmmaIA:
             )
 
         chat_prompt = (
-            self.system_prompt
-            + """
+                self.system_prompt
+                + """
 
 CONTEXTE ACTUEL : CHAT AVEC L'ANALYSTE
 
@@ -491,6 +490,95 @@ Règles supplémentaires pour le chat :
         except Exception:
             self.stats["erreurs"] += 1
             logger.exception("Erreur pendant le chat Emma IA")
+            return (
+                "Je ne peux pas traiter cette demande "
+                "pour le moment. Veuillez réessayer."
+            )
+
+    def chat_contextualise(
+            self,
+            message: str,
+            dossier_context: Dict[str, Any],
+            historique_messages: List[Dict[str, str]],
+    ) -> str:
+        """
+        Chat avec mémoire du dossier ET de la conversation en cours.
+
+        dossier_context : le dossier tel que transmis à l'ouverture de la
+        conversation (donnees_dossier, metriques_officielles_calculees,
+        champs_obligatoires_pour_ce_produit, hypotheses_existantes).
+
+        historique_messages : les derniers messages de CETTE conversation,
+        deja tronques par l'appelant, format
+        [{"role": "user"|"assistant", "content": "..."}].
+        """
+
+        if not message or not message.strip():
+            return (
+                "Je n'ai reçu aucun message. "
+                "Pouvez-vous préciser votre question ?"
+            )
+
+        dossier_resume = json.dumps(
+            dossier_context, ensure_ascii=False, indent=2
+        )
+
+        chat_prompt = (
+                self.system_prompt
+                + f"""
+
+    CONTEXTE ACTUEL : CHAT AVEC L'ANALYSTE
+
+    Tu échanges avec un analyste au sujet du dossier suivant. Ce dossier est
+    l'état le plus a jour disponible au moment de cet appel — utilise-le comme
+    source de verite, jamais une valeur mentionnee plus tot dans la conversation
+    si elle differe de ce qui suit.
+
+    DOSSIER ACTUEL :
+    {dossier_resume}
+
+    Regles supplementaires pour le chat :
+
+    1. N'invente aucune donnee.
+    2. Ne pretends jamais avoir consulte un document qui n'est pas present
+       dans le dossier ci-dessus ou dans la conversation.
+    3. Utilise uniquement les informations disponibles dans le dossier et
+       dans l'historique de cette conversation.
+    4. Si une information manque, indique-le clairement.
+    5. Ne modifie jamais une metrique officielle.
+    6. Ne prends jamais une decision de credit a la place de l'analyste.
+    7. Ne deduis jamais de caracteristique sensible.
+    8. Si l'analyste demande explicitement une analyse complete au format
+       JSON, respecte le format JSON defini dans le prompt systeme.
+    9. Sinon, reponds normalement en texte.
+    10. Reste concentree exclusivement sur ce dossier ; si l'analyste
+        mentionne un autre dossier, indique qu'une nouvelle conversation
+        doit etre ouverte pour l'analyser separement.
+    """
+        )
+
+        messages = [{"role": "system", "content": chat_prompt}]
+        messages.extend(historique_messages)
+        messages.append({"role": "user", "content": message.strip()})
+
+        try:
+            response = self.client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=messages,
+                temperature=0.7,
+            )
+
+            self.stats["appels"] += 1
+
+            contenu = response.choices[0].message.content
+            if not contenu:
+                raise ValueError("Réponse vide du modèle")
+
+            return contenu.strip()
+
+        except Exception:
+            self.stats["erreurs"] += 1
+            logger.exception("Erreur pendant le chat contextualisé Emma IA")
             return (
                 "Je ne peux pas traiter cette demande "
                 "pour le moment. Veuillez réessayer."
