@@ -1,52 +1,55 @@
-# Étape 1: Build - Installation des dépendances
+# Étape 1 : Build - Installation des dépendances
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Installer les dépendances système nécessaires
+# Dépendances système nécessaires à certaines librairies Python
 RUN apt-get update && apt-get install -y \
-    curl \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copier et installer les dépendances Python
+# Installation des dépendances Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Étape 2: Runtime - Image finale
+
+# Étape 2 : Runtime
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Installer curl pour les healthchecks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# curl utilisé pour le healthcheck
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Créer un utilisateur non-root pour la sécurité
+# Utilisateur non-root
 RUN addgroup --system --gid 1001 emma && \
     adduser --system --uid 1001 --gid 1001 emma
 
-# Copier les dépendances depuis le builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Copier les dépendances Python
+COPY --from=builder /usr/local/lib/python3.11/site-packages \
+    /usr/local/lib/python3.11/site-packages
 
-# Copier le code de l'application
+COPY --from=builder /usr/local/bin \
+    /usr/local/bin
+
+# Copier l'application
 COPY app/ ./app/
+COPY main.py .
 
-# Créer un fichier .env vide si nécessaire
-RUN touch .env
-
-# Changer les permissions
+# Permissions
 RUN chown -R emma:emma /app
 
-# Passer à l'utilisateur non-root
+# Utilisateur non-root
 USER emma
 
-# Exposer le port
+# Port de l'application
 EXPOSE 8001
 
 # Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8001/api/v1/health || exit 1
 
-# Lancer avec Gunicorn (production)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Démarrage de l'application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
