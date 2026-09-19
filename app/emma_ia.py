@@ -7,17 +7,16 @@ from openai import OpenAI
 
 from app.config import settings
 
-
 logger = logging.getLogger(__name__)
 
 
 class EmmaIA:
-
     CHAMPS_OBLIGATOIRES_SORTIE = [
         "statut_dossier",
         "niveau_confiance",
         "informations_verifiees",
         "metriques_officielles",
+        "bureau_credit_analyse",
         "informations_manquantes",
         "informations_non_exposees",
         "informations_fournies_par_analyste",
@@ -131,8 +130,8 @@ class EmmaIA:
             )
 
     def _deplier_si_double_enveloppe(
-        self,
-        dossier_data: Dict[str, Any],
+            self,
+            dossier_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Protection contre un payload déjà enveloppé.
@@ -150,11 +149,11 @@ class EmmaIA:
         """
 
         if (
-            "donnees_dossier" in dossier_data
-            and isinstance(
-                dossier_data["donnees_dossier"],
-                dict,
-            )
+                "donnees_dossier" in dossier_data
+                and isinstance(
+            dossier_data["donnees_dossier"],
+            dict,
+        )
         ):
             logger.warning(
                 "Payload deja enveloppe detecte "
@@ -198,8 +197,8 @@ class EmmaIA:
         return dict(dossier_data)
 
     def _preparer_contexte(
-        self,
-        dossier_data: Dict[str, Any],
+            self,
+            dossier_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Prépare le contexte transmis à Emma IA.
@@ -272,8 +271,8 @@ class EmmaIA:
             )
 
             if isinstance(
-                champs_depuis_deplie,
-                list,
+                    champs_depuis_deplie,
+                    list,
             ):
                 champs_obligatoires = (
                     champs_depuis_deplie
@@ -298,8 +297,8 @@ class EmmaIA:
             )
 
             if isinstance(
-                hyp_depuis_deplie,
-                list,
+                    hyp_depuis_deplie,
+                    list,
             ):
                 hypotheses_deja_ajoutees = (
                     hyp_depuis_deplie
@@ -320,8 +319,8 @@ class EmmaIA:
             metriques_officielles = {}
 
         if not isinstance(
-            metriques_officielles,
-            dict,
+                metriques_officielles,
+                dict,
         ):
             logger.warning(
                 "metriques_officielles_calculees "
@@ -331,11 +330,11 @@ class EmmaIA:
             metriques_officielles = {}
 
         if (
-            not metriques_officielles
-            and isinstance(
-                anciennes_metriques,
-                dict,
-            )
+                not metriques_officielles
+                and isinstance(
+            anciennes_metriques,
+            dict,
+        )
         ):
             metriques_officielles = anciennes_metriques
 
@@ -345,50 +344,46 @@ class EmmaIA:
 
         def present(champ: str) -> bool:
             return (
-                champ in donnees_dossier
-                and donnees_dossier[champ] is not None
+                    champ in donnees_dossier
+                    and donnees_dossier[champ] is not None
             )
 
+        demande = donnees_dossier.get("demande")
+        if not isinstance(demande, dict):
+            demande = {}
+
         controles = {
-            "historique_credit_present": present(
-                "historique_credit"
+            "historique_credit_present": present("historique_credit"),
+            "montant_demande_present": (
+                    present("montant_demande")
+                    or demande.get("montant_demande") is not None
             ),
-            "montant_demande_present": present(
-                "montant_demande"
+            "duree_demandee_present": (
+                    present("duree_demandee")
+                    or present("duree_demandee_mois")
+                    or demande.get("duree_demandee") is not None
+                    or demande.get("duree_demandee_mois") is not None
             ),
-            "duree_demandee_present": present(
-                "duree_demandee"
-            ),
-            "type_credit_present": present(
-                "type_credit"
+            "type_credit_present": (
+                    present("type_credit")
+                    or demande.get("type_credit") is not None
             ),
             "revenu_mensuel_present": (
-                present("revenu_mensuel")
-                or (
-                    present("revenus")
-                    and isinstance(
-                        donnees_dossier.get("revenus"),
-                        dict,
+                    present("revenu_mensuel")
+                    or (
+                            present("revenus")
+                            and isinstance(donnees_dossier.get("revenus"), dict)
+                            and donnees_dossier["revenus"].get("revenu_mensuel") is not None
                     )
-                    and donnees_dossier[
-                        "revenus"
-                    ].get(
-                        "revenu_mensuel"
-                    ) is not None
-                )
             ),
-            "dettes_presentes": present(
-                "dettes"
+            "dettes_presentes": present("dettes"),
+            "bureau_credit_present": (
+                    present("bureau_credit")
+                    or present("historique_credit")
             ),
-            "metriques_officielles_presentes": bool(
-                metriques_officielles
-            ),
-            "champs_obligatoires_presents": bool(
-                champs_obligatoires
-            ),
-            "hypotheses_deja_ajoutees_presentes": bool(
-                hypotheses_deja_ajoutees
-            ),
+            "metriques_officielles_presentes": bool(metriques_officielles),
+            "champs_obligatoires_presents": bool(champs_obligatoires),
+            "hypotheses_deja_ajoutees_presentes": bool(hypotheses_deja_ajoutees),
         }
 
         if not any(controles.values()):
@@ -414,8 +409,8 @@ class EmmaIA:
         }
 
     def _valider_reponse(
-        self,
-        resultat: Dict[str, Any],
+            self,
+            resultat: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Vérifie que la réponse d'Emma respecte le format attendu.
@@ -442,8 +437,8 @@ class EmmaIA:
         )
 
         if (
-            statut is not None
-            and statut not in self.STATUTS_AUTORISES
+                statut is not None
+                and statut not in self.STATUTS_AUTORISES
         ):
             logger.warning(
                 "Statut Emma IA invalide : %s",
@@ -459,8 +454,8 @@ class EmmaIA:
         )
 
         if (
-            niveau is not None
-            and niveau not in self.NIVEAUX_AUTORISES
+                niveau is not None
+                and niveau not in self.NIVEAUX_AUTORISES
         ):
             logger.warning(
                 "Niveau de confiance Emma IA invalide : %s",
@@ -481,8 +476,8 @@ class EmmaIA:
             )
 
             if (
-                position is not None
-                and position not in self.POSITIONS_AUTORISEES
+                    position is not None
+                    and position not in self.POSITIONS_AUTORISEES
             ):
                 logger.warning(
                     "Position Emma IA invalide : %s",
@@ -496,8 +491,8 @@ class EmmaIA:
         return resultat
 
     def analyser(
-        self,
-        dossier_data: Dict[str, Any],
+            self,
+            dossier_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Analyse complète d'un dossier anonymisé.
@@ -513,8 +508,8 @@ class EmmaIA:
 
         try:
             if not isinstance(
-                dossier_data,
-                dict,
+                    dossier_data,
+                    dict,
             ):
                 raise TypeError(
                     "dossier_data doit être un dictionnaire"
@@ -593,6 +588,17 @@ class EmmaIA:
                 "source 'Analyste', jamais fusionnée "
                 "silencieusement aux données vérifiées.\n\n"
 
+                "20. Si historique_credit ou bureau_credit est présent, "
+                "tu DOIS remplir le champ bureau_credit_analyse avec "
+                "les informations réellement fournies (score, bureau, "
+                "date_rapport, retards, taux_remboursement, dettes "
+                "issues du bureau vs déclarées client). "
+                "Ne laisse JAMAIS bureau_credit_analyse vide "
+                "lorsqu'un historique de crédit exploitable est fourni.\n\n"
+
+                "21. Respecte strictement la règle de la section 15 "
+                "concernant dettes_confirmees_completes.\n\n"
+
                 "DONNEES A ANALYSER :\n"
                 f"{json.dumps(contexte, ensure_ascii=False, indent=2)}"
             )
@@ -658,8 +664,8 @@ class EmmaIA:
             )
 
     def _reponse_erreur(
-        self,
-        erreur: Exception,
+            self,
+            erreur: Exception,
     ) -> Dict[str, Any]:
         """
         Réponse de secours lorsqu'une erreur technique survient.
@@ -684,6 +690,7 @@ class EmmaIA:
                 "historique_credit": {},
             },
             "metriques_officielles": {},
+            "bureau_credit_analyse": {},
             "informations_manquantes": [],
             "informations_non_exposees": [],
             "informations_fournies_par_analyste": [],
@@ -709,8 +716,8 @@ class EmmaIA:
         }
 
     def _valider_envelope_chat(
-        self,
-        resultat: Dict[str, Any],
+            self,
+            resultat: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Valide et normalise l'enveloppe JSON du chat.
@@ -720,16 +727,16 @@ class EmmaIA:
         """
 
         if not isinstance(
-            resultat,
-            dict,
+                resultat,
+                dict,
         ):
             raise ValueError(
                 "La réponse chat d'Emma IA n'est pas un objet JSON"
             )
 
         if (
-            resultat.get("type")
-            not in self.TYPES_CHAT_AUTORISES
+                resultat.get("type")
+                not in self.TYPES_CHAT_AUTORISES
         ):
             logger.warning(
                 "Type de chat invalide : %s",
@@ -749,8 +756,8 @@ class EmmaIA:
         )
 
         if (
-            position is not None
-            and position not in self.POSITIONS_AUTORISEES
+                position is not None
+                and position not in self.POSITIONS_AUTORISEES
         ):
             logger.warning(
                 "Position invalide dans le chat : %s",
@@ -764,8 +771,8 @@ class EmmaIA:
         )
 
         if (
-            niveau is not None
-            and niveau not in self.NIVEAUX_AUTORISES
+                niveau is not None
+                and niveau not in self.NIVEAUX_AUTORISES
         ):
             logger.warning(
                 "Niveau de confiance invalide dans le chat : %s",
@@ -775,28 +782,28 @@ class EmmaIA:
             resultat["niveau_confiance"] = None
 
         if not isinstance(
-            resultat.get("elements_favorables"),
-            list,
+                resultat.get("elements_favorables"),
+                list,
         ):
             resultat["elements_favorables"] = []
 
         if not isinstance(
-            resultat.get("points_attention"),
-            list,
+                resultat.get("points_attention"),
+                list,
         ):
             resultat["points_attention"] = []
 
         if not isinstance(
-            resultat.get("validation_humaine_requise"),
-            list,
+                resultat.get("validation_humaine_requise"),
+                list,
         ):
             resultat["validation_humaine_requise"] = []
 
         return resultat
 
     def chat(
-        self,
-        message: str,
+            self,
+            message: str,
     ) -> str:
         """
         Chat conversationnel avec l'analyste.
@@ -812,8 +819,8 @@ class EmmaIA:
             )
 
         chat_prompt = (
-            self.system_prompt
-            + """
+                self.system_prompt
+                + """
 
 CONTEXTE ACTUEL : CHAT AVEC L'ANALYSTE
 
@@ -886,10 +893,10 @@ Règles supplémentaires pour le chat :
             )
 
     def chat_contextualise(
-        self,
-        message: str,
-        dossier_context: Dict[str, Any],
-        historique_messages: List[Dict[str, str]],
+            self,
+            message: str,
+            dossier_context: Dict[str, Any],
+            historique_messages: List[Dict[str, str]],
     ) -> Dict[str, Any]:
         """
         Chat avec mémoire du dossier ET de la conversation en cours.
@@ -930,8 +937,8 @@ Règles supplémentaires pour le chat :
         )
 
         chat_prompt = (
-            self.system_prompt
-            + f"""
+                self.system_prompt
+                + f"""
 
 CONTEXTE ACTUEL : CHAT AVEC L'ANALYSTE
 
@@ -1003,8 +1010,8 @@ validation_humaine_requise.
         # Protection contre un historique mal formé.
         for historique in historique_messages:
             if not isinstance(
-                historique,
-                dict,
+                    historique,
+                    dict,
             ):
                 continue
 
@@ -1023,8 +1030,8 @@ validation_humaine_requise.
                 continue
 
             if not isinstance(
-                content,
-                str,
+                    content,
+                    str,
             ):
                 continue
 

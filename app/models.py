@@ -191,3 +191,77 @@ class AjouterHypotheseRequest(BaseModel):
 class AjouterHypotheseResponse(BaseModel):
     conversation_id: str
     hypotheses_existantes: List[Dict[str, Any]]
+
+class MessageHistorique(BaseModel):
+    role: Literal["user", "assistant"]
+
+    # Limite volontairement plus basse pour éviter les messages trop longs.
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+    )
+
+
+class ChatDemoRequest(BaseModel):
+    """Chat de démo stateless — le front renvoie tout l'historique à chaque appel."""
+
+    donnees_dossier: Dict[str, Any] = Field(default_factory=dict)
+
+    metriques_officielles_calculees: Dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+    champs_obligatoires_pour_ce_produit: List[str] = Field(
+        default_factory=list,
+        max_length=MAX_ITEMS_LISTE,
+    )
+
+    hypotheses_existantes: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=MAX_ITEMS_LISTE,
+    )
+
+    messages: List[MessageHistorique] = Field(
+        ...,
+        min_length=1,
+        max_length=40,
+    )
+
+    @field_validator("messages")
+    @classmethod
+    def valider_dernier_message(
+        cls,
+        v: List[MessageHistorique],
+    ) -> List[MessageHistorique]:
+        """Vérifie que le dernier message vient bien de l'utilisateur."""
+
+        if v[-1].role != "user":
+            raise ValueError(
+                "Le dernier message de 'messages' doit être 'user'"
+            )
+
+        return v
+
+    @field_validator("donnees_dossier")
+    @classmethod
+    def limiter_taille_donnees(
+        cls,
+        v: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Empêche l'envoi d'un dossier trop volumineux."""
+
+        taille = len(json.dumps(v, ensure_ascii=False))
+
+        if taille > MAX_TAILLE_DONNEES_DOSSIER:
+            raise ValueError(
+                f"donnees_dossier trop volumineux ({taille} caractères)"
+            )
+
+        return v
+
+
+class ChatDemoResponse(BaseModel):
+    mode: Literal["chat", "analyse_complete"]
+    reponse: Dict[str, Any]
+
