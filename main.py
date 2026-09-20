@@ -1,12 +1,10 @@
 import logging
-import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-
 from app.models import (
     DossierAnalyseRequest,
     ChatInput,
@@ -16,6 +14,8 @@ from app.models import (
     ChatMessageResponse,
     AjouterHypotheseRequest,
     AjouterHypotheseResponse,
+    ChatDemoRequest,
+    ChatDemoResponse,
 )
 from app.chat_intent import est_demande_analyse_complete
 from app.emma_ia import EmmaIA
@@ -36,13 +36,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Initialise les ressources nécessaires au démarrage du service
-    et les ferme proprement à l'arrêt.
-
-    PostgreSQL et Elasticsearch sont initialisés une seule fois
-    au démarrage de l'application.
-    """
 
     logger.info("Démarrage d'Emma IA...")
 
@@ -130,13 +123,7 @@ except Exception:
 
 
 def get_conversation_store():
-    """
-    Retourne l'instance active du ConversationStore.
-
-    Une erreur HTTP 503 est retournée si le stockage n'a pas
-    été correctement initialisé au démarrage.
-    """
-
+    # Retourne l'instance active du ConversationStore.
     store = conversation_store_module.conversation_store
 
     if store is None:
@@ -150,8 +137,7 @@ def get_conversation_store():
 
 @app.get("/api/v1")
 async def root():
-    """Retourne l'état général du service."""
-
+    # Retourne l'état général du service.
     store_available = (
         conversation_store_module.conversation_store is not None
     )
@@ -169,8 +155,7 @@ async def root():
 
 @app.get("/api/v1/health")
 async def health():
-    """Endpoint utilisé pour vérifier que le service est disponible."""
-
+    # Vérifie que le service et le stockage SaaS sont disponibles.
     store_available = (
         conversation_store_module.conversation_store is not None
     )
@@ -192,8 +177,7 @@ async def analyser_dossier(
     dossier: DossierAnalyseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    """Analyse un dossier transmis par le client SaaS."""
-
+    # Analyse un dossier transmis par le client SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -226,8 +210,7 @@ async def demarrer_conversation(
     payload: DemarrerConversationRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    """Crée une nouvelle conversation associée à un dossier SaaS."""
-
+    # Crée une nouvelle conversation associée à un dossier SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -276,19 +259,9 @@ async def _traiter_message_chat(
     payload: ChatMessageInput,
     conv: Dict[str, Any],
 ) -> ChatMessageResponse:
-    """
-    Logique commune SaaS/démo.
-
-    Si le message demande une analyse complète, le dossier est envoyé
-    à emma.analyser() avec les hypothèses déjà ajoutées pendant la
-    conversation.
-
-    Sinon, le message est traité par chat_contextualise().
-    """
-
+    # Logique commune au chat SaaS.
     dossier_context = conv["dossier_context"]
     store = get_conversation_store()
-
 
     if est_demande_analyse_complete(payload.message):
         try:
@@ -311,10 +284,7 @@ async def _traiter_message_chat(
                         )
                     ),
 
-                    # IMPORTANT :
-                    # Les hypothèses ajoutées via
-                    # POST /conversations/{id}/hypotheses
-                    # doivent être transmises à Emma.
+                    # Les hypothèses SaaS sont transmises à Emma.
                     "hypotheses_deja_ajoutees": (
                         dossier_context.get(
                             "hypotheses_existantes",
@@ -369,7 +339,6 @@ async def _traiter_message_chat(
             reponse=resultat_complet,
         )
 
-
     historique = await store.get_historique_tronque(
         payload.conversation_id,
         limit=MAX_MESSAGES_HISTORIQUE,
@@ -392,8 +361,7 @@ async def _traiter_message_chat(
             detail="Erreur interne du chat",
         )
 
-    # La nouvelle version de chat_contextualise retourne
-    # une enveloppe JSON structurée, pas une string.
+    # La réponse de chat_contextualise est une enveloppe JSON structurée.
     await store.ajouter_message(
         conversation_id=payload.conversation_id,
         role="user",
@@ -425,14 +393,7 @@ async def chat_avec_emma(
     payload: ChatMessageInput,
     client: ClientType = Depends(verifier_client),
 ):
-    """
-    Chat SaaS.
-
-    Route commune qui détecte automatiquement :
-    - une demande d'analyse complète ;
-    - ou un échange conversationnel classique.
-    """
-
+    # Chat SaaS avec historique persistant.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -455,137 +416,6 @@ async def chat_avec_emma(
         raise HTTPException(
             status_code=404,
             detail="Conversation introuvable",
-        )
-
-    return await _traiter_message_chat(
-        payload=payload,
-        conv=conv,
-    )
-
-
-@app.post(
-    "/api/v1/demo/conversations",
-    response_model=DemarrerConversationResponse,
-)
-@limiter.limit(settings.rate_limit_demo)
-async def demarrer_conversation_demo(
-    request: Request,
-    payload: DemarrerConversationRequest,
-    client: ClientType = Depends(verifier_client),
-):
-    """
-    Ouvre une conversation de démonstration à partir du dossier
-    fourni par le visiteur.
-
-    Le ticket_id est généré côté serveur avec le préfixe DEMO-
-    afin de garder les conversations de démo séparées du SaaS.
-    """
-
-    if not emma:
-        raise HTTPException(
-            status_code=503,
-            detail="Emma indisponible",
-        )
-
-    if client != ClientType.DEMO:
-        raise HTTPException(
-            status_code=403,
-            detail="Route réservée à la démo",
-        )
-
-    store = get_conversation_store()
-
-    # Purge légère des anciennes conversations de démo
-    # à chaque nouvelle session.
-    try:
-        await store.purger_conversations_demo_expirees(
-            max_age_heures=2
-        )
-    except Exception:
-        logger.exception(
-            "Erreur lors de la purge des conversations de démo"
-        )
-
-    if not payload.donnees_dossier:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "donnees_dossier ne peut pas être vide — "
-                "voir le format attendu."
-            ),
-        )
-
-    dossier_context = {
-        "donnees_dossier": payload.donnees_dossier,
-        "metriques_officielles_calculees": (
-            payload.metriques_officielles_calculees
-        ),
-        "champs_obligatoires_pour_ce_produit": (
-            payload.champs_obligatoires_pour_ce_produit
-        ),
-        "hypotheses_existantes": (
-            payload.hypotheses_existantes
-        ),
-    }
-
-    ticket_id_demo = (
-        f"DEMO-{uuid.uuid4().hex[:8]}"
-    )
-
-    conversation_id = await store.creer_conversation(
-        ticket_id=ticket_id_demo,
-        dossier_context=dossier_context,
-    )
-
-    return DemarrerConversationResponse(
-        conversation_id=conversation_id,
-        ticket_id=ticket_id_demo,
-    )
-
-
-@app.post(
-    "/api/v1/demo/chat",
-    response_model=ChatMessageResponse,
-)
-@limiter.limit(settings.rate_limit_demo)
-async def chat_demo(
-    request: Request,
-    payload: ChatMessageInput,
-    client: ClientType = Depends(verifier_client),
-):
-    """
-    Chat de démonstration.
-
-    Même logique que le SaaS :
-    - analyse complète si demandée ;
-    - sinon chat contextualisé.
-    """
-
-    if not emma:
-        raise HTTPException(
-            status_code=503,
-            detail="Emma indisponible",
-        )
-
-    if client != ClientType.DEMO:
-        raise HTTPException(
-            status_code=403,
-            detail="Route réservée à la démo",
-        )
-
-    store = get_conversation_store()
-
-    conv = await store.get_conversation(
-        payload.conversation_id
-    )
-
-    if (
-        conv is None
-        or not conv["ticket_id"].startswith("DEMO-")
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation de démo introuvable",
         )
 
     return await _traiter_message_chat(
@@ -605,15 +435,7 @@ async def ajouter_hypothese_saas(
     payload: AjouterHypotheseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    """
-    Ajoute une hypothèse non vérifiée au dossier d'une conversation
-    SaaS.
-
-    L'hypothèse est stockée dans hypotheses_existantes et sera
-    automatiquement transmise à Emma lors de la prochaine analyse
-    complète.
-    """
-
+    # Ajoute une hypothèse à une conversation SaaS.
     if client != ClientType.SAAS:
         raise HTTPException(
             status_code=403,
@@ -657,19 +479,24 @@ async def ajouter_hypothese_saas(
 
 
 @app.post(
-    "/api/v1/demo/conversations/{conversation_id}/hypotheses",
-    response_model=AjouterHypotheseResponse,
+    "/api/v1/demo/chat",
+    response_model=ChatDemoResponse,
 )
 @limiter.limit(settings.rate_limit_demo)
-async def ajouter_hypothese_demo(
+async def chat_demo(
     request: Request,
-    conversation_id: str,
-    payload: AjouterHypotheseRequest,
+    payload: ChatDemoRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    """
-    Ajoute une hypothèse non vérifiée à une conversation de démo.
-    """
+    # Chat de démo stateless.
+    # Le front renvoie tout l'historique à chaque appel.
+    # Aucun conversation_id et aucun ConversationStore ne sont utilisés.
+
+    if not emma:
+        raise HTTPException(
+            status_code=503,
+            detail="Emma indisponible",
+        )
 
     if client != ClientType.DEMO:
         raise HTTPException(
@@ -677,43 +504,83 @@ async def ajouter_hypothese_demo(
             detail="Route réservée à la démo",
         )
 
-    store = get_conversation_store()
-
-    conv = await store.get_conversation(
-        conversation_id
-    )
-
-    if (
-        conv is None
-        or not conv["ticket_id"].startswith("DEMO-")
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation de démo introuvable",
-        )
-
-    hypothese = {
-        "description": payload.description,
-        "champ_impacte": payload.champ_impacte,
-        "source": "Analyste",
+    dossier_context = {
+        "donnees_dossier": payload.donnees_dossier,
+        "metriques_officielles_calculees": (
+            payload.metriques_officielles_calculees
+        ),
+        "champs_obligatoires_pour_ce_produit": (
+            payload.champs_obligatoires_pour_ce_produit
+        ),
+        "hypotheses_existantes": (
+            payload.hypotheses_existantes
+        ),
     }
 
+    # Le dernier message est toujours celui de l'utilisateur.
+    *historique, dernier = payload.messages
+
+    # Seuls les messages précédents sont envoyés comme historique.
+    historique_dicts = [
+        message.model_dump()
+        for message in historique
+    ]
+
+    # Une demande d'analyse complète utilise directement emma.analyser().
+    if est_demande_analyse_complete(dernier.content):
+        try:
+            resultat = emma.analyser(
+                {
+                    **payload.donnees_dossier,
+                    "metriques_officielles_calculees": (
+                        payload.metriques_officielles_calculees
+                    ),
+                    "champs_obligatoires_pour_ce_produit": (
+                        payload.champs_obligatoires_pour_ce_produit
+                    ),
+                    "hypotheses_deja_ajoutees": (
+                        payload.hypotheses_existantes
+                    ),
+                }
+            )
+
+            return ChatDemoResponse(
+                mode="analyse_complete",
+                reponse=resultat,
+            )
+
+        except Exception:
+            logger.exception(
+                "Erreur lors de l'analyse complète démo"
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail="Erreur interne de l'analyse",
+            )
+
+    # Le chat classique utilise l'historique envoyé par le frontend.
     try:
-        hypotheses = await store.ajouter_hypothese(
-            conversation_id,
-            hypothese,
+        enveloppe = emma.chat_contextualise(
+            message=dernier.content,
+            dossier_context=dossier_context,
+            historique_messages=historique_dicts,
         )
 
-    except KeyError:
+        return ChatDemoResponse(
+            mode="chat",
+            reponse=enveloppe,
+        )
+
+    except Exception:
+        logger.exception(
+            "Erreur lors du chat démo"
+        )
+
         raise HTTPException(
-            status_code=404,
-            detail="Conversation introuvable",
+            status_code=500,
+            detail="Erreur interne du chat",
         )
-
-    return AjouterHypotheseResponse(
-        conversation_id=conversation_id,
-        hypotheses_existantes=hypotheses,
-    )
 
 
 @app.post("/api/v1/demo/analyser")
@@ -723,13 +590,7 @@ async def analyser_demo(
     dossier: DossierAnalyseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    """
-    Équivalent démo de /analyser.
-
-    Permet au visiteur d'envoyer son propre dossier et de recevoir
-    directement le JSON d'analyse sans créer de conversation.
-    """
-
+    # Analyse démo stateless sans création de conversation.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -763,8 +624,7 @@ async def get_stats(
     client: ClientType = Depends(verifier_client),
     _=Depends(exiger_saas),
 ):
-    """Retourne les statistiques du service pour le SaaS."""
-
+    # Retourne les statistiques du service pour le SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
