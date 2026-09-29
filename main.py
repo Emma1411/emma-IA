@@ -3,8 +3,6 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 from app.models import (
     DossierAnalyseRequest,
     ChatInput,
@@ -27,7 +25,6 @@ from app.conversation_store import (
 )
 from app.config import settings
 from app.auth import verifier_client, exiger_saas, ClientType
-from app.rate_limit import limiter
 
 
 logging.basicConfig(level=logging.INFO)
@@ -85,14 +82,6 @@ app = FastAPI(
 )
 
 
-app.state.limiter = limiter
-
-app.add_exception_handler(
-    RateLimitExceeded,
-    _rate_limit_exceeded_handler,
-)
-
-
 # Seules les applications connues peuvent appeler l'API
 # depuis un navigateur.
 app.add_middleware(
@@ -123,7 +112,6 @@ except Exception:
 
 
 def get_conversation_store():
-    # Retourne l'instance active du ConversationStore.
     store = conversation_store_module.conversation_store
 
     if store is None:
@@ -137,7 +125,6 @@ def get_conversation_store():
 
 @app.get("/api/v1")
 async def root():
-    # Retourne l'état général du service.
     store_available = (
         conversation_store_module.conversation_store is not None
     )
@@ -155,7 +142,6 @@ async def root():
 
 @app.get("/api/v1/health")
 async def health():
-    # Vérifie que le service et le stockage SaaS sont disponibles.
     store_available = (
         conversation_store_module.conversation_store is not None
     )
@@ -171,13 +157,11 @@ async def health():
 
 
 @app.post("/api/v1/analyser")
-@limiter.limit(settings.rate_limit_saas)
 async def analyser_dossier(
     request: Request,
     dossier: DossierAnalyseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    # Analyse un dossier transmis par le client SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -204,13 +188,11 @@ async def analyser_dossier(
     "/api/v1/conversations",
     response_model=DemarrerConversationResponse,
 )
-@limiter.limit(settings.rate_limit_saas)
 async def demarrer_conversation(
     request: Request,
     payload: DemarrerConversationRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    # Crée une nouvelle conversation associée à un dossier SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -259,7 +241,6 @@ async def _traiter_message_chat(
     payload: ChatMessageInput,
     conv: Dict[str, Any],
 ) -> ChatMessageResponse:
-    # Logique commune au chat SaaS.
     dossier_context = conv["dossier_context"]
     store = get_conversation_store()
 
@@ -283,8 +264,6 @@ async def _traiter_message_chat(
                             [],
                         )
                     ),
-
-                    # Les hypothèses SaaS sont transmises à Emma.
                     "hypotheses_deja_ajoutees": (
                         dossier_context.get(
                             "hypotheses_existantes",
@@ -304,7 +283,6 @@ async def _traiter_message_chat(
                 detail="Erreur interne de l'analyse",
             )
 
-        # Historisation du message utilisateur.
         await store.ajouter_message(
             conversation_id=payload.conversation_id,
             role="user",
@@ -312,7 +290,6 @@ async def _traiter_message_chat(
             ticket_id=conv["ticket_id"],
         )
 
-        # Historisation d'une version texte de la réponse.
         synthese = resultat_complet.get(
             "synthese",
             {},
@@ -361,7 +338,6 @@ async def _traiter_message_chat(
             detail="Erreur interne du chat",
         )
 
-    # La réponse de chat_contextualise est une enveloppe JSON structurée.
     await store.ajouter_message(
         conversation_id=payload.conversation_id,
         role="user",
@@ -387,13 +363,11 @@ async def _traiter_message_chat(
     "/api/v1/chat",
     response_model=ChatMessageResponse,
 )
-@limiter.limit(settings.rate_limit_saas)
 async def chat_avec_emma(
     request: Request,
     payload: ChatMessageInput,
     client: ClientType = Depends(verifier_client),
 ):
-    # Chat SaaS avec historique persistant.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -428,14 +402,12 @@ async def chat_avec_emma(
     "/api/v1/conversations/{conversation_id}/hypotheses",
     response_model=AjouterHypotheseResponse,
 )
-@limiter.limit(settings.rate_limit_saas)
 async def ajouter_hypothese_saas(
     request: Request,
     conversation_id: str,
     payload: AjouterHypotheseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    # Ajoute une hypothèse à une conversation SaaS.
     if client != ClientType.SAAS:
         raise HTTPException(
             status_code=403,
@@ -482,16 +454,11 @@ async def ajouter_hypothese_saas(
     "/api/v1/demo/chat",
     response_model=ChatDemoResponse,
 )
-@limiter.limit(settings.rate_limit_demo)
 async def chat_demo(
     request: Request,
     payload: ChatDemoRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    # Chat de démo stateless.
-    # Le front renvoie tout l'historique à chaque appel.
-    # Aucun conversation_id et aucun ConversationStore ne sont utilisés.
-
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -517,16 +484,13 @@ async def chat_demo(
         ),
     }
 
-    # Le dernier message est toujours celui de l'utilisateur.
     *historique, dernier = payload.messages
 
-    # Seuls les messages précédents sont envoyés comme historique.
     historique_dicts = [
         message.model_dump()
         for message in historique
     ]
 
-    # Une demande d'analyse complète utilise directement emma.analyser().
     if est_demande_analyse_complete(dernier.content):
         try:
             resultat = emma.analyser(
@@ -559,7 +523,6 @@ async def chat_demo(
                 detail="Erreur interne de l'analyse",
             )
 
-    # Le chat classique utilise l'historique envoyé par le frontend.
     try:
         enveloppe = emma.chat_contextualise(
             message=dernier.content,
@@ -584,13 +547,11 @@ async def chat_demo(
 
 
 @app.post("/api/v1/demo/analyser")
-@limiter.limit(settings.rate_limit_demo)
 async def analyser_demo(
     request: Request,
     dossier: DossierAnalyseRequest,
     client: ClientType = Depends(verifier_client),
 ):
-    # Analyse démo stateless sans création de conversation.
     if not emma:
         raise HTTPException(
             status_code=503,
@@ -624,7 +585,6 @@ async def get_stats(
     client: ClientType = Depends(verifier_client),
     _=Depends(exiger_saas),
 ):
-    # Retourne les statistiques du service pour le SaaS.
     if not emma:
         raise HTTPException(
             status_code=503,
